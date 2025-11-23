@@ -10,6 +10,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Xml;
 using System.Linq;
+using System.Drawing;
 #endregion
 
 namespace Server
@@ -1694,6 +1695,24 @@ namespace Server
                     }
                 }
             }
+        }
+    }
+    public static class ColorExtensions
+    {
+        public static Color Darken(this Color c, float level)
+        {
+			if(level <= 0.0f) return c; 
+            return Color.FromArgb(c.A,(int)(c.R/level),(int)(c.G/level),(int)(c.B/level));
+        }
+
+        public static Color Lighten(this Color c, float level)
+        {
+            level = Math.Max(0, Math.Min(1, level));
+
+            return Color.FromArgb(c.A,
+                                  (int)(c.R + (255 - c.R) * level),
+                                  (int)(c.G + (255 - c.G) * level),
+                                  (int)(c.B + (255 - c.B) * level));
         }
     }
 }
