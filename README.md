@@ -28,7 +28,7 @@ Run `_winrelease.bat` for production environment.
 
 Run `make debug` for development, attaching a debugger and/or extended output.
 
-Run `make' or 'make release` for production environment. Writing release is optinal by default
+Run `make` or `make release` for production environment. Writing release is optinal by default
 
 
 ### Linux Dependencies
