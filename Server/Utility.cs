@@ -1701,8 +1701,12 @@ namespace Server
     {
         public static Color Darken(this Color c, float level)
         {
-			if(level <= 0.0f) return c; 
-            return Color.FromArgb(c.A,(int)(c.R/level),(int)(c.G/level),(int)(c.B/level));
+            level = Math.Max(0, Math.Min(1, level));
+
+            return Color.FromArgb(c.A,
+                                  (int)(c.R - (C.R * level),
+                                  (int)(c.G - (C.G * level)),
+                                  (int)(c.B - (C.B * level)));
         }
 
         public static Color Lighten(this Color c, float level)
