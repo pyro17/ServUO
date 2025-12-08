@@ -14,6 +14,8 @@ namespace Server.Customs
 
     public class SetAllSkillcapsCommand : BaseCommand
     {
+        private static readonly int defaultSkillCaps = Config.Get("PlayerCaps.SkillCap", 1000) / 10;
+
         public SetAllSkillcapsCommand()
         {
             AccessLevel = AccessLevel.GameMaster;
@@ -33,8 +35,8 @@ namespace Server.Customs
             double value;
             if (e.Arguments.Length <= 0 || string.IsNullOrEmpty(e.Arguments[0]))
             {
-                from.SendMessage("No Value given, loading defaults!");
-                value = Config.Get("PlayerCaps.SkillCap", 1000) / 10;
+                from.SendMessage("No Value given, using defaults!");
+                value = defaultSkillCaps;
             }
             else if (!double.TryParse(e.Arguments[0], out value))
             {
@@ -52,6 +54,11 @@ namespace Server.Customs
 
     public class SetTotalSkillcapCommand : BaseCommand
     {
+        private static readonly int defaultTotalSkillCap = Config.Get(
+            "PlayerCaps.TotalSkillsCap",
+            7000
+        );
+
         public SetTotalSkillcapCommand()
         {
             AccessLevel = AccessLevel.GameMaster;
@@ -71,8 +78,8 @@ namespace Server.Customs
             int value;
             if (e.Arguments.Length <= 0 || string.IsNullOrEmpty(e.Arguments[0]))
             {
-                from.SendMessage("No Value given, loading defaults!");
-                value = Config.Get("PlayerCaps.TotalSkillsCap", 7000);
+                from.SendMessage("No Value given, using defaults!");
+                value = defaultTotalSkillCap;
             }
             else if (!int.TryParse(e.Arguments[0], out value))
             {
@@ -80,7 +87,7 @@ namespace Server.Customs
                 return;
             }
             mob.Skills.Cap = value;
-            from.SendMessage($"Set total skill cap to {value/10}.0 for Mobile: {mob.RawName}");
+            from.SendMessage($"Set total skill cap to {value / 10}.0 for Mobile: {mob.RawName}");
             CommandLogging.LogChangeProperty(
                 from,
                 mob,
