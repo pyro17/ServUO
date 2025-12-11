@@ -3710,7 +3710,20 @@ namespace Server
 
 		public bool Deleted { get { return m_Deleted; } }
 
-		[CommandProperty(AccessLevel.GameMaster)]
+        public Dictionary<string, object> PropertySnapshot { get; } = new Dictionary<string, object>();
+        public bool Dirty { get; set; }
+        public void ClearDirty()
+        {
+           // LiteDBSaveSystem.TakeSnapshot(this);
+            Dirty = false;
+        }
+        public void CheckDirtyFlag()
+        {
+            Dirty = LiteDBSaveSystem.CheckDirty(this);
+        }
+
+
+        [CommandProperty(AccessLevel.GameMaster)]
 		public int VirtualArmor
 		{
 			get { return m_VirtualArmor; }

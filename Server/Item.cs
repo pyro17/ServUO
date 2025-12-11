@@ -1987,6 +1987,18 @@ namespace Server
         /// </summary>
         public bool Deleted { get { return GetFlag(ImplFlag.Deleted); } }
 
+        public Dictionary<string, object> PropertySnapshot { get; } = new Dictionary<string, object>();
+        public bool Dirty { get; set; }
+        public void ClearDirty()
+        {
+//            LiteDBSaveSystem.TakeSnapshot(this);
+            Dirty = false;
+        }
+        public void CheckDirtyFlag()
+        {
+            Dirty = LiteDBSaveSystem.CheckDirty(this);
+        }
+
         [CommandProperty(AccessLevel.GameMaster)]
         public LootType LootType
         {

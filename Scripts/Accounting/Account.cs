@@ -1,18 +1,21 @@
 #region References
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net;
-using System.Security.Cryptography;
-using System.Text;
-using System.Xml;
-
+using LiteDB;
 using Server.Commands;
 using Server.Items;
 using Server.Misc;
 using Server.Mobiles;
 using Server.Multis;
 using Server.Network;
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
+using System.Xml;
+using static Server.LiteDBSaveSystem;
 #endregion
 
 namespace Server.Accounting
@@ -32,7 +35,7 @@ namespace Server.Accounting
 		public static void Configure()
 		{
 			CommandSystem.Register("ConvertCurrency", AccessLevel.Owner, ConvertCurrency);
-		}
+        }
 
 		private static void ConvertCurrency(CommandEventArgs e)
 		{
@@ -186,6 +189,119 @@ namespace Server.Accounting
 			Accounts.Add(this);
 		}
 
+        bool Try(Action<string> setter, string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return false;
+
+            setter(value);
+            return true;
+        }
+
+        public Account(AccountRecord record)
+        {
+            Username = record.Username;
+
+            bool pwempty = true;
+
+            switch (AccountHandler.ProtectPasswords)
+            {
+                case PasswordProtection.None:
+                    if (Try(SetPassword, record.Password)
+                     || Try(v => _SHA512Password = v, record.SHA512Password)
+                     || Try(v => _SHA1Password = v, record.SHA1Password)
+                     || Try(v => _MD5Password = v, record.MD5Password))
+                        pwempty = false;
+                    break;
+
+                case PasswordProtection.Crypt:
+                    if (Try(v => _MD5Password = v, record.MD5Password)
+                     || Try(SetPassword, record.Password)
+                     || Try(v => _SHA1Password = v, record.SHA1Password)
+                     || Try(v => _SHA512Password = v, record.SHA512Password))
+                        pwempty = false;
+                    break;
+
+                case PasswordProtection.NewCrypt:
+                    if (Try(v => _SHA1Password = v, record.SHA1Password)
+                     || Try(SetPassword, record.Password)
+                     || Try(v => _MD5Password = v, record.MD5Password)
+                     || Try(v => _SHA512Password = v, record.SHA512Password))
+                        pwempty = false;
+                    break;
+
+                default: // NewSecureCrypt
+                    if (Try(v => _SHA512Password = v, record.SHA512Password)
+                     || Try(SetPassword, record.Password)
+                     || Try(v => _SHA1Password = v, record.SHA1Password)
+                     || Try(v => _MD5Password = v, record.MD5Password))
+                        pwempty = false;
+                    break;
+            }
+
+            if (pwempty)
+                SetPassword("empty");
+
+            m_AccessLevel = record.AccessLevel;
+
+            Flags = record.Flags;
+            Created = record.Created;
+            LastLogin = record.LastLogin;
+            TotalCurrency = record.TotalCurrency;
+            Sovereigns = record.Sovereigns;
+
+
+            m_Mobiles = new Mobile[7];
+            foreach(var m in record.MobileEntries)
+            {
+                if (m != null && m.Index >= 0 && m.Index < m_Mobiles.Length)
+                {
+                    m_Mobiles[m.Index] = World.FindMobile(m.Value);
+                    if (m_Mobiles[m.Index] != null)
+                        m_Mobiles[m.Index].Account = this;
+                }
+            }
+
+            m_Comments = new List<AccountComment>();
+            if (record.AccountComments != null)
+            {
+                foreach (var c in record.AccountComments)
+                    m_Comments.Add(new AccountComment(c));
+            }
+
+            m_Tags = new List<AccountTag>();
+            if (record.Tags != null)
+            {
+                foreach (var t in record.Tags)
+                    m_Tags.Add(new AccountTag(t.Item1, t.Item2));
+            }
+
+            LoginIPs = record.LoginIPs;
+            IPRestrictions = record.IPRestrictions;
+
+            var totalGameTime = record.TotalGameTime;
+
+            if (totalGameTime == TimeSpan.Zero)
+            {
+                totalGameTime = m_Mobiles.OfType<PlayerMobile>().Aggregate(totalGameTime, (current, m) => current + m.GameTime);
+            }
+
+            m_TotalGameTime = record.TotalGameTime;
+
+            if (Young)
+            {
+                CheckYoung();
+            }
+            SecureAccounts = new Dictionary<Mobile, int>();
+            foreach (var msab in record.MobileSecureAccountBalances)
+            {
+                if(msab != null && msab.Index >= 0 && msab.Index < record.MobileSecureAccountBalances.Length)
+                    SecureAccounts[m_Mobiles[msab.Index]] = msab.Value;
+            }
+
+            Accounts.Add(this);
+        }
+
 		public Account(XmlElement node)
 		{
 			Username = Utility.GetText(node["username"], "empty");
@@ -308,7 +424,7 @@ namespace Server.Accounting
 			TotalCurrency = Utility.GetXMLDouble(Utility.GetText(node["totalCurrency"], "0"), 0);
             Sovereigns = Utility.GetXMLInt32(Utility.GetText(node["sovereigns"], "0"), 0);
 
-			m_Mobiles = LoadMobiles(node);
+            m_Mobiles = LoadMobiles(node);
 			m_Comments = LoadComments(node);
 			m_Tags = LoadTags(node);
 			LoginIPs = LoadAddressList(node);
@@ -1312,6 +1428,55 @@ namespace Server.Accounting
 
 			return hasAccess;
 		}
+        public AccountRecord Save()
+        {
+            IndexValuePair[] entries = new IndexValuePair[m_Mobiles.Length];
+            IndexValuePair[] secureAccountBalance = new IndexValuePair[m_Mobiles.Length];
+            for (int i = 0; i < m_Mobiles.Length; i++)
+            {
+                if(m_Mobiles[i] == null || m_Mobiles[i].Deleted) continue;
+                entries[i] = new IndexValuePair(i, m_Mobiles[i].Serial);
+                secureAccountBalance[i] = new IndexValuePair(i, GetSecureAccountAmount(m_Mobiles[i]));
+
+            }
+            AccountCommentRecord[] commentRec = null;
+            if (m_Comments != null)
+            {
+                commentRec = new AccountCommentRecord[m_Comments.Count];
+                for (int i = 0; i < m_Comments.Count; i++)
+                    commentRec[i] = new AccountCommentRecord() { AddedBy = m_Comments[i].AddedBy, Content = m_Comments[i].Content, LastModified = m_Comments[i].LastModified };
+            }
+
+            StringPair[] tagRec = null;
+            if (m_Tags != null)
+            {
+                tagRec = new StringPair[m_Tags.Count];
+                for (int i = 0; i < m_Tags.Count; i++)
+                    tagRec[i] = new StringPair(m_Tags[i].Name, m_Tags[i].Value);
+            }
+
+            return new AccountRecord()
+            {
+                Username = this.Username,
+                PlainPassword = this.PlainPassword,
+                MD5Password = _MD5Password,
+                SHA1Password = _SHA1Password,
+                SHA512Password = _SHA512Password,
+                AccessLevel = m_AccessLevel,
+                Flags = this.Flags,
+                Created = this.Created,
+                LastLogin = this.LastLogin,
+                TotalGameTime = this.TotalGameTime,
+                MobileEntries = entries,
+                AccountComments = commentRec,
+                Tags = tagRec,
+                LoginIPs = this.LoginIPs,
+                IPRestrictions = this.IPRestrictions,
+                TotalCurrency = this.TotalCurrency,
+                Sovereigns = this.Sovereigns,
+                MobileSecureAccountBalances = secureAccountBalance
+            };
+        }
 
 		/// <summary>
 		///     Serializes this Account instance to an XmlTextWriter.

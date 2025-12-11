@@ -23,6 +23,9 @@
 		<DebugType>none</DebugType>
 	</PropertyGroup>
 	<ItemGroup>
+	  <PackageReference Include="LiteDB" Version="5.0.21" />
+	</ItemGroup>
+	<ItemGroup>
 		<ProjectReference Include="..\Ultima\Ultima.csproj" />
 	</ItemGroup>
 </Project>

@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Xml;
+using static Server.LiteDBSaveSystem;
 
 namespace Server.Accounting
 {
     public class Accounts
     {
-        private static Dictionary<string, IAccount> m_Accounts = new Dictionary<string, IAccount>();
+        private static Dictionary<string, IAccount> m_Accounts;
 
         public static void Configure()
         {
@@ -55,6 +57,15 @@ namespace Server.Accounting
         {
             m_Accounts = new Dictionary<string, IAccount>(32, StringComparer.OrdinalIgnoreCase);
 
+            if (World.UsingLiteDB)
+            {
+                foreach (var rec in _accCol.FindAll())
+                {
+                    new Account(rec);
+                }
+                return;
+            }
+
             string filePath = Path.Combine("Saves/Accounts", "accounts.xml");
 
             if (!File.Exists(filePath))
@@ -80,6 +91,17 @@ namespace Server.Accounting
 
         public static void Save(WorldSaveEventArgs e)
         {
+            if(World.UsingLiteDB)
+            {
+                List<AccountRecord> accs = new List<AccountRecord>(m_Accounts.Count);
+                foreach(var acc in GetAccounts().ToArray())
+                {
+                    accs.Add(((Account)acc).Save());
+                }
+                Write(accs);
+                return;
+            }
+
             if (!Directory.Exists("Saves/Accounts"))
                 Directory.CreateDirectory("Saves/Accounts");
 

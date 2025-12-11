@@ -26,6 +26,7 @@ namespace Server.Misc
             SavesEnabled = Config.Get("AutoSave.Enabled", true);
 
             m_Delay = Config.Get("AutoSave.Frequency", TimeSpan.FromMinutes(5.0));
+            m_Delay = Config.Get("AutoSave.FrequencyLiteDB", TimeSpan.FromSeconds(1)) ;
             m_Warning = Config.Get("AutoSave.WarningTime", TimeSpan.Zero);
 
             m_Timer = Timer.DelayCall(m_Delay - m_Warning, m_Delay, Tick);
@@ -63,16 +64,19 @@ namespace Server.Misc
             if (AutoRestart.Restarting || CreateWorld.WorldCreating)
                 return;
 
-            World.WaitForWriteCompletion();
+            if(!World.UsingLiteDB)
+            {
+                World.WaitForWriteCompletion();
 
-            try
-            {
-                if (!Backup())
-                    Console.WriteLine("WARNING: Automatic backup FAILED");
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine("WARNING: Automatic backup FAILED:\n{0}", e);
+                try
+                {
+                    if (!Backup())
+                        Console.WriteLine("WARNING: Automatic backup FAILED");
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine("WARNING: Automatic backup FAILED:\n{0}", e);
+                }
             }
 
             World.Save(true, permitBackgroundWrite);

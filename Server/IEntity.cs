@@ -1,11 +1,21 @@
 #region References
 using System;
+using System.Collections.Generic;
 #endregion
 
 namespace Server
 {
-	public interface IEntity : IPoint3D, IComparable, IComparable<IEntity>
-	{
+    public interface IDatabase
+    {
+        Dictionary<string, object> PropertySnapshot { get; }
+
+        bool Dirty { get; set; }
+
+        void CheckDirtyFlag();
+        void ClearDirty();
+    }
+	public interface IEntity : IPoint3D, IComparable, IComparable<IEntity>, IDatabase
+    {
 		Serial Serial { get; }
 
         Point3D Location { get; set; }
@@ -19,7 +29,7 @@ namespace Server
 
 		int Hue { get; set; }
 
-		bool Deleted { get; }
+        bool Deleted { get; }
 
 		void Delete();
 		void ProcessDelta();
@@ -38,9 +48,21 @@ namespace Server
 		public int Y { get { return Location.Y; } }
 		public int Z { get { return Location.Z; } }
 
-		public bool Deleted { get; private set; }
 
-		public bool NoMoveHS { get; set; }
+        public Dictionary<string, object> PropertySnapshot { get; } = new Dictionary<string, object>();
+        public bool Dirty { get; set; }
+        public void ClearDirty()
+        {
+           // LiteDBSaveSystem.TakeSnapshot(this);
+            Dirty = false;
+        }
+        public void CheckDirtyFlag()
+        {
+            Dirty = LiteDBSaveSystem.CheckDirty(this);
+        }
+        public bool Deleted { get; private set; }
+
+        public bool NoMoveHS { get; set; }
 
 		Direction IEntity.Direction { get; set; }
 

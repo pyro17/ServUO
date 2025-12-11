@@ -32,6 +32,17 @@ namespace Server.Accounting
         }
 
         /// <summary>
+        /// Deserializes an AccountComment instance from an xml element.
+        /// </summary>
+        /// <param name="node">The XmlElement instance from which to deserialize.</param>
+        public AccountComment(LiteDBSaveSystem.AccountCommentRecord record)
+        {
+            m_AddedBy = string.IsNullOrEmpty(record.AddedBy) ? "empty" : record.AddedBy;
+            m_LastModified = record.LastModified;
+            m_Content = record.Content == null ? "" : record.Content;
+        }
+
+        /// <summary>
         /// A string representing who added this comment.
         /// </summary>
         public string AddedBy

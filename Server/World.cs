@@ -1,24 +1,23 @@
 #region References
+using CustomsFramework;
+using Server.Guilds;
+using Server.Network;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
-
-using CustomsFramework;
-
-using Server.Guilds;
-using Server.Network;
 #endregion
 
 namespace Server
 {
 	public static class World
 	{
-		private static Dictionary<Serial, Mobile> m_Mobiles;
-		private static Dictionary<Serial, Item> m_Items;
-		private static Dictionary<CustomSerial, SaveData> _Data;
+		private static Dictionary<Serial, Mobile> m_Mobiles = new Dictionary<Serial, Mobile>();
+		private static Dictionary<Serial, Item> m_Items = new Dictionary<Serial, Item>();
+        private static Dictionary<CustomSerial, SaveData> _Data = new Dictionary<CustomSerial, SaveData>();
 		
 		private static bool m_Metrics = Config.Get("General.Metrics", false);
 
@@ -49,6 +48,9 @@ namespace Server
 		public static readonly string DataIndexPath = Path.Combine("Saves/Customs/", "SaveData.idx");
 		public static readonly string DataTypesPath = Path.Combine("Saves/Customs/", "SaveData.tdb");
 		public static readonly string DataBinaryPath = Path.Combine("Saves/Customs/", "SaveData.bin");
+
+        public static readonly bool UsingLiteDB = true;
+
 
 		public static void NotifyDiskWriteComplete()
 		{
@@ -351,6 +353,11 @@ namespace Server
 			{
 				return;
 			}
+            if(UsingLiteDB)
+            {
+                LiteDBSaveSystem.Load();
+                return;
+            }
 
 			m_Loaded = true;
 			m_LoadingType = null;
@@ -1096,12 +1103,21 @@ namespace Server
 
 		public static void Save()
 		{
-			Save(true, false);
+            if (UsingLiteDB)
+                LiteDBSaveSystem.Save(true);
+            else
+                Save(true, false); // seriell
 		}
 
-		public static void Save(bool message, bool permitBackgroundWrite)
-		{
-			if (m_Saving)
+        public static void Save(bool message, bool permitBackgroundWrite)
+        {
+            if (UsingLiteDB)
+            {
+                LiteDBSaveSystem.Save(true);
+                return;
+            }
+
+            if (m_Saving)
 			{
 				return;
 			}
