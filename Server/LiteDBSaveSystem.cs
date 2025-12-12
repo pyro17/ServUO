@@ -1,16 +1,12 @@
 using LiteDB;
-using Server.Accounting;
 using Server.Guilds;
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Reflection;
-using System.Runtime.Remoting.Messaging;
 using System.Threading.Tasks;
 
 namespace Server
@@ -37,16 +33,21 @@ namespace Server
             _mobileCol.EnsureIndex(x => x.Serial, true);
             _itemCol.EnsureIndex(x => x.Serial, true);
             _guildCol.EnsureIndex(x => x.Id, true);            
+            _accCol.EnsureIndex(x => x.Username, true);
         }
 
         private static Mobile[] mobarray = null;
         private static Item[] itemarray = null;
 
-        static bool asd = true;
+        static int asd;
         public static void Save(bool message)
         {
-
+            long totalsw = Stopwatch.GetTimestamp();
             EventSink.InvokeBeforeWorldSave(new BeforeWorldSaveEventArgs());
+
+            long totalsw2 = Stopwatch.GetTimestamp();
+            long totalsw3 = Stopwatch.GetTimestamp();
+            long totalsw4 = Stopwatch.GetTimestamp();
 
             mobarray = World.Mobiles.Values.ToArray();
             itemarray = World.Items.Values.ToArray();
@@ -65,8 +66,8 @@ namespace Server
             });
             Console.WriteLine($"Dirtycheck took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
             sw = Stopwatch.GetTimestamp();
-            var dirtyMobiles = mobarray.Where(m => m.Dirty);
-            var dirtyItems = itemarray.Where(i => i.Dirty);
+            var dirtyMobiles = mobarray.Where(m => m.Dirty).ToArray();
+            var dirtyItems = itemarray.Where(i => i.Dirty).ToArray();
             Console.WriteLine($"Get dirt Linq took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
 
 
@@ -77,24 +78,32 @@ namespace Server
                 Write(_mobileCol, dirtyMobiles, asd);
                 Write(_itemCol, dirtyItems, asd);
                 Write(BaseGuild.List);
+                totalsw2 = Stopwatch.GetTimestamp() - totalsw2;
+                totalsw3 = Stopwatch.GetTimestamp();
                 EventSink.InvokeWorldSave(new WorldSaveEventArgs(message));
-                asd = !asd;
+                totalsw3 = Stopwatch.GetTimestamp() - totalsw3;
+                totalsw4 = Stopwatch.GetTimestamp();
+                asd = (asd+1) % 4;
 
                 _db.Commit();
             }
-            catch(Exception)
+            catch
             {
                 World.Broadcast(0, false, "Error while writing to DB! Rollback!");
                 Console.WriteLine("Error while writing to DB! Rollback!");
                 _db.Rollback();
             }
+            Console.WriteLine($"Total Savetime without save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw4 + totalsw2 - totalsw3 )}");
             EventSink.InvokeAfterWorldSave(new AfterWorldSaveEventArgs());
+            Console.WriteLine($"Total Savetime with pre, mid and post save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw)}\n");
         }
 
-        private static void Write<T>(ILiteCollection<DBRecord> dbcol, IEnumerable<T> collection, bool asd = true) where T : IEntity, ISerializable
+        private static void Write<T>(ILiteCollection<DBRecord> dbcol, T[] collection, int asd) where T : IEntity, ISerializable
         {
             long sw = Stopwatch.GetTimestamp();
-            if (asd) // just a switch to ping pong between the 2 "styles" for testing
+            long gcc = GC.GetTotalMemory(false);
+
+            if (asd == 0) // just a switch to ping pong between the 2 "styles" for testing
             {
                 foreach (var dirt in collection)
                 {
@@ -111,7 +120,7 @@ namespace Server
                 }
                 Console.WriteLine($"Write for collection Mode 1 {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
             }
-            else // >10% faster, but more garbage? hmm..
+            else if(asd == 1)// >10% faster, but more garbage? hmm..
             {
                 var dirty = collection.Where(x => x.Deleted).Select(x => x.Serial.Value).ToHashSet();
                 var toupdate = collection
@@ -125,6 +134,69 @@ namespace Server
                 dbcol.Upsert(toupdate);
                 Console.WriteLine($"Write for collection Mode 2 {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
             }
+            else if(asd == 2)
+            {
+                int count = 0;
+                int dirtyCount = 0;
+                foreach (var x in collection)
+                {
+                    if (x.Deleted) count++;
+                    else if (x.Dirty) dirtyCount++;
+                }
+
+                // 2. Vorallokierte Arrays nutzen, um temporären GC zu vermeiden
+                int[] toDelete = new int[count];
+                DBRecord[] toUpdate = new DBRecord[dirtyCount];
+
+                int deleteIndex = 0;
+                int updateIndex = 0;
+
+                foreach (var x in collection)
+                {
+                    if (x.Deleted)
+                        toDelete[deleteIndex++] = x.Serial.Value;
+                    else if (x.Dirty)
+                    {
+                        // DBRecord erstellen, dirty flag zurücksetzen
+                        toUpdate[updateIndex++] = ToRecord(x);
+                        x.ClearDirty();
+                    }
+                }
+
+                // 3. Löschen und Upsert
+                if (toDelete.Length > 0)
+                    dbcol.DeleteMany(x => toDelete.Contains(x.Serial));
+
+                if (toUpdate.Length > 0)
+                    dbcol.Upsert(toUpdate);
+
+                Console.WriteLine($"Write optimized {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+            }
+            else
+            {
+                var toDelete = new HashSet<int>((collection as ICollection<T>).Count);
+                var toUpdate = new List<DBRecord>((collection as ICollection<T>).Count);
+
+                foreach (var item in collection)
+                {
+                    if (item.Deleted)
+                    {
+                        toDelete.Add(item.Serial.Value);
+                        continue;
+                    }
+                    toUpdate.Add(ToRecord(item));
+                    item.ClearDirty();
+                }
+
+                if (toDelete.Count > 0)
+                    dbcol.DeleteMany(x => toDelete.Contains(x.Serial));
+
+                if (toUpdate.Count > 0)
+                    dbcol.Upsert(toUpdate);
+
+                Console.WriteLine($"Write optimized 2? {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+            }
+            Console.WriteLine($"Write caused {GC.GetTotalMemory(false) - gcc} garbagebytes");
         }
 
         public static void Write(IEnumerable<AccountRecord> collection)
@@ -163,33 +235,59 @@ namespace Server
                 if (entity != null)
                 {
                     col[entity.Serial] = entity;
-                    toDeserialze.Enqueue((entity, rec.Data));
+                    toDeserialize.Enqueue(new EntityData() { Entity = entity, Data = rec.Data });
                 }
             }
         }
 
-        public static void LoadAccounts(Dictionary<string, IAccount> accounts)
+        private struct EntityData
         {
+            public IEntity Entity;
+            public byte[] Data;
         }
 
-        private static Queue<(IEntity, byte[])> toDeserialze = new Queue<(IEntity, byte[])>();
+        private static Queue<EntityData> toDeserialize = new Queue<EntityData>();
+        private static BinaryReader _br;
+        private static BinaryFileReader _reader;
         private static void Deserialize()
         {
-            foreach (var entity in toDeserialze)
+            foreach (var entry in toDeserialize)
             {
-                var obj = entity.Item1;
-                using (var ms = new MemoryStream(entity.Item2))
-                using (var br = new BinaryReader(ms))
+                var obj = entry.Entity;
+                var data = entry.Data;
+
+                if (_ms == null)
+                    _ms = new MemoryStream(4096);
+                else
                 {
-                    var reader = new BinaryFileReader(br);
-                    if (obj is Item i)
-                        i.Deserialize(reader);
-                    else if (obj is Mobile m)
-                        m.Deserialize(reader);
-                    reader.Close();
+                    _ms.SetLength(0);
+                    if (_ms.Capacity < data.Length)
+                        _ms.Capacity = data.Length;
                 }
+
+                _ms.Write(data, 0, data.Length);
+                _ms.Position = 0;
+
+                if (_br == null)
+                    _br = new BinaryReader(_ms, System.Text.Encoding.Default, true);
+
+                if(_reader  == null)
+                    _reader = new BinaryFileReader(_br);
+
+                if (obj is Item i)
+                    i.Deserialize(_reader);
+                else if (obj is Mobile m)
+                    m.Deserialize(_reader);
             }
+            _br.Close();
+            _ms.Close();
+            _ms.Dispose();
+            _reader = null;
+            _br = null;
+            _ms = null;
         }
+
+        private static readonly Type[] SerialCtorParam = { typeof(Serial) };
 
         private static T FromRecord<T>(DBRecord rec) where T : IEntity
         {
@@ -197,8 +295,7 @@ namespace Server
                 return default(T);
             T obj;
 
-            string typename = rec.EntityType;
-            Type type = ScriptCompiler.FindTypeByFullName(typename);
+            Type type = ScriptCompiler.FindTypeByFullName(rec.EntityType);
 
             if (type == null)
                 throw new Exception($"Ungültiger type {type} für {typeof(T).Name}");
@@ -206,7 +303,7 @@ namespace Server
             if (!typeof(T).IsAssignableFrom(type))
                 throw new Exception($"Geladener Typ {type} ist kein {typeof(T).Name}");
 
-            ConstructorInfo ctor = type.GetConstructor(new Type[] { typeof(Serial)});
+            ConstructorInfo ctor = type.GetConstructor(SerialCtorParam);
             obj = (T)(ctor.Invoke(new object[] { (Serial)rec.Serial }));
 
             return obj;
