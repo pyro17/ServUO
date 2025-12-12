@@ -11729,7 +11729,8 @@ public static void _TraceEnd(int index)
 					// Write the maxdelay
 					writer.Write(so.MaxDelay);
 					// write the next spawn time for the subgrop
-					writer.WriteDeltaTime(so.NextSpawn);
+					//writer.WriteDeltaTime(so.NextSpawn);
+					writer.Write(so.NextSpawn);
 
 				}
 			}
@@ -12038,7 +12039,8 @@ public static void _TraceEnd(int index)
 							bool clearadvance = reader.ReadBool();
 							double mind = reader.ReadDouble();
 							double maxd = reader.ReadDouble();
-							DateTime nextspawn = reader.ReadDeltaTime();
+							//DateTime nextspawn = reader.ReadDeltaTime();
+							DateTime nextspawn = reader.ReadDateTime();
 
 							tmpRestrictKillsToSubgroup.Add(restrictkills);
 							tmpClearOnAdvance.Add(clearadvance);

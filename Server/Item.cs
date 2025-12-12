@@ -1989,6 +1989,7 @@ namespace Server
 
         public Dictionary<string, object> PropertySnapshot { get; } = new Dictionary<string, object>();
         public bool Dirty { get; set; }
+        public ulong SnapshotHash { get; set; }
         public void ClearDirty()
         {
 //            LiteDBSaveSystem.TakeSnapshot(this);
@@ -2790,8 +2791,10 @@ namespace Server
 
             writer.Write((int)flags);
 
+
+            writer.Write(m_LastMovedTime);
             /* begin last moved time optimization */
-            long ticks = m_LastMovedTime.Ticks;
+            /*long ticks = m_LastMovedTime.Ticks;
             long now = DateTime.UtcNow.Ticks;
 
             TimeSpan d;
@@ -2823,7 +2826,7 @@ namespace Server
                 minutes = int.MaxValue;
             }
 
-            writer.WriteEncodedInt((int)minutes);
+            writer.WriteEncodedInt((int)minutes);*/
             /* end */
 
             if (GetSaveFlag(flags, SaveFlag.Direction))
@@ -3173,12 +3176,14 @@ namespace Server
 
                         if (version < 7)
                         {
-                            LastMoved = reader.ReadDeltaTime();
+                            LastMoved = reader.ReadDateTime();
+                            //LastMoved = reader.ReadDeltaTime();
                         }
                         else
                         {
-                            int minutes = reader.ReadEncodedInt();
-
+                            //int minutes = reader.ReadEncodedInt();
+                            LastMoved = reader.ReadDateTime();
+                            /*
                             try
                             {
                                 LastMoved = DateTime.UtcNow - TimeSpan.FromMinutes(minutes);
@@ -3186,7 +3191,7 @@ namespace Server
                             catch
                             {
                                 LastMoved = DateTime.UtcNow;
-                            }
+                            }*/
                         }
 
                         if (GetSaveFlag(flags, SaveFlag.Direction))
@@ -3409,7 +3414,7 @@ namespace Server
                     {
                         SaveFlag flags = (SaveFlag)reader.ReadInt();
 
-                        LastMoved = reader.ReadDeltaTime();
+                        LastMoved = reader.ReadDateTime();
 
                         if (GetSaveFlag(flags, SaveFlag.Direction))
                         {
@@ -3575,7 +3580,7 @@ namespace Server
                 case 2:
                     {
                         AcquireCompactInfo().m_Bounce = BounceInfo.Deserialize(reader);
-                        LastMoved = reader.ReadDeltaTime();
+                        LastMoved = reader.ReadDateTime();
 
                         goto case 1;
                     }

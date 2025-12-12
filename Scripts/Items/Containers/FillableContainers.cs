@@ -370,7 +370,8 @@ namespace Server.Items
             if (m_RespawnTimer != null)
             {
                 writer.Write(true);
-                writer.WriteDeltaTime((DateTime)m_NextRespawnTime);
+                //writer.WriteDeltaTime((DateTime)m_NextRespawnTime);
+                writer.Write(m_NextRespawnTime);
             }
             else
             {
@@ -407,7 +408,8 @@ namespace Server.Items
                     {
                         if (reader.ReadBool())
                         {
-                            m_NextRespawnTime = reader.ReadDeltaTime();
+                            //m_NextRespawnTime = reader.ReadDeltaTime();
+                            m_NextRespawnTime = reader.ReadDateTime();
 
                             TimeSpan delay = m_NextRespawnTime - DateTime.UtcNow;
                             m_RespawnTimer = Timer.DelayCall(delay > TimeSpan.Zero ? delay : TimeSpan.Zero, new TimerCallback(Respawn));

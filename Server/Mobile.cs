@@ -3712,6 +3712,7 @@ namespace Server
 
         public Dictionary<string, object> PropertySnapshot { get; } = new Dictionary<string, object>();
         public bool Dirty { get; set; }
+        public ulong SnapshotHash { get; set; }
         public void ClearDirty()
         {
            // LiteDBSaveSystem.TakeSnapshot(this);
@@ -5880,9 +5881,13 @@ namespace Server
                     }
 				case 31:
 					{
+						m_LastStrGain = reader.ReadDateTime();
+                        m_LastIntGain = reader.ReadDateTime();
+                        m_LastDexGain = reader.ReadDateTime();
+                        /*
 						m_LastStrGain = reader.ReadDeltaTime();
 						m_LastIntGain = reader.ReadDeltaTime();
-						m_LastDexGain = reader.ReadDeltaTime();
+						m_LastDexGain = reader.ReadDeltaTime();*/
 
 						goto case 30;
 					}
@@ -6424,9 +6429,12 @@ namespace Server
 
             writer.Write(m_IgnoreMobiles);
 
-			writer.WriteDeltaTime(m_LastStrGain);
+            writer.Write(m_LastStrGain);
+            writer.Write(m_LastIntGain);
+            writer.Write(m_LastDexGain);
+			/*writer.WriteDeltaTime(m_LastStrGain);
 			writer.WriteDeltaTime(m_LastIntGain);
-			writer.WriteDeltaTime(m_LastDexGain);
+			writer.WriteDeltaTime(m_LastDexGain);*/
 
 			byte hairflag = 0x00;
 
