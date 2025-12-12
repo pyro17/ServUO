@@ -10,6 +10,7 @@ namespace Server
         Dictionary<string, object> PropertySnapshot { get; }
 
         bool Dirty { get; set; }
+        ulong SnapshotHash { get; set; }
 
         void CheckDirtyFlag();
         void ClearDirty();
@@ -70,7 +71,9 @@ namespace Server
 
 		int IEntity.Hue { get; set; }
 
-		public Entity(Serial serial, Point3D loc, Map map)
+        public ulong SnapshotHash { get; set; }
+
+        public Entity(Serial serial, Point3D loc, Map map)
 		{
 			Serial = serial;
 			Location = loc;
