@@ -8,6 +8,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 #endregion
 
@@ -73,6 +74,11 @@ namespace Server
 
 		public static bool OnDelete(IEntity entity)
 		{
+            if(UsingLiteDB)
+            {
+                LiteDBSaveSystem.Delete(entity);
+                return true;
+            }
 			if (m_Saving || m_Loading)
 			{
 				if (m_Saving)
@@ -348,25 +354,39 @@ namespace Server
 		}
 
 		public static void Load()
-		{
-			if (m_Loaded)
+        {
+            if (m_Loaded)
 			{
 				return;
 			}
             if(UsingLiteDB)
             {
+                Utility.PushColor(ConsoleColor.Yellow);
+                Console.WriteLine("World: Loading...");
+                Utility.PopColor();
+                long sw = Stopwatch.GetTimestamp();
                 LiteDBSaveSystem.Load();
+
+                Utility.PushColor(ConsoleColor.Green);
+                Console.WriteLine(
+                    "...done ({1} items, {2} mobiles, {3} customs) ({0:F2} seconds)",
+                    TimeSpan.FromTicks(Stopwatch.GetTimestamp()-sw).TotalSeconds,
+                    World.Items.Count,
+                    World.Mobiles.Count,
+                    World.Data.Count);
+                Utility.PopColor();
                 return;
             }
 
 			m_Loaded = true;
 			m_LoadingType = null;
 
-			Utility.PushColor(ConsoleColor.Yellow);
-			Console.WriteLine("World: Loading...");
-			Utility.PopColor();
 
-			Stopwatch watch = Stopwatch.StartNew();
+            Utility.PushColor(ConsoleColor.Yellow);
+            Console.WriteLine("World: Loading...");
+            Utility.PopColor();
+
+            Stopwatch watch = Stopwatch.StartNew();
 
 			m_Loading = true;
 

@@ -3715,7 +3715,6 @@ namespace Server
         public ulong SnapshotHash { get; set; }
         public void ClearDirty()
         {
-           // LiteDBSaveSystem.TakeSnapshot(this);
             Dirty = false;
         }
         public void CheckDirtyFlag()

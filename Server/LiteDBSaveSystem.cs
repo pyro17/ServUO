@@ -13,6 +13,8 @@ namespace Server
 {
     public static class LiteDBSaveSystem
     {
+        private static readonly object SaveLock = new object();
+        private static readonly object DBLock = new object();
         public static readonly LiteDatabase _db;
         private static readonly ILiteCollection<DBRecord> _mobileCol;
         private static readonly ILiteCollection<DBRecord> _itemCol;
@@ -32,171 +34,139 @@ namespace Server
 
             _mobileCol.EnsureIndex(x => x.Serial, true);
             _itemCol.EnsureIndex(x => x.Serial, true);
-            _guildCol.EnsureIndex(x => x.Id, true);            
+            _guildCol.EnsureIndex(x => x.Id, true);
             _accCol.EnsureIndex(x => x.Username, true);
         }
 
         private static Mobile[] mobarray = null;
         private static Item[] itemarray = null;
 
-        static int asd;
-        public static void Save(bool message)
+        public static async void Save(bool message)
         {
-            long totalsw = Stopwatch.GetTimestamp();
-            EventSink.InvokeBeforeWorldSave(new BeforeWorldSaveEventArgs());
-
-            long totalsw2 = Stopwatch.GetTimestamp();
-            long totalsw3 = Stopwatch.GetTimestamp();
-            long totalsw4 = Stopwatch.GetTimestamp();
-
-            mobarray = World.Mobiles.Values.ToArray();
-            itemarray = World.Items.Values.ToArray();
-
-            long sw = Stopwatch.GetTimestamp();
-            Parallel.ForEach(mobarray, m => {
-                m.CheckDirtyFlag();
-            });
-
-            Parallel.ForEach(itemarray, i => {
-                if (i.Decays && i.Parent == null && i.Map != Map.Internal && (i.LastMoved + i.DecayTime) <= DateTime.UtcNow)
-                {
-                    i.Delete();
-                }
-                i.CheckDirtyFlag();
-            });
-            Console.WriteLine($"Dirtycheck took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
-            sw = Stopwatch.GetTimestamp();
-            var dirtyMobiles = mobarray.Where(m => m.Dirty).ToArray();
-            var dirtyItems = itemarray.Where(i => i.Dirty).ToArray();
-            Console.WriteLine($"Get dirt Linq took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
-
-
-            _db.BeginTrans();
-
-            try
+            lock (SaveLock)
             {
-                Write(_mobileCol, dirtyMobiles, asd);
-                Write(_itemCol, dirtyItems, asd);
-                Write(BaseGuild.List);
-                totalsw2 = Stopwatch.GetTimestamp() - totalsw2;
-                totalsw3 = Stopwatch.GetTimestamp();
-                EventSink.InvokeWorldSave(new WorldSaveEventArgs(message));
-                totalsw3 = Stopwatch.GetTimestamp() - totalsw3;
-                totalsw4 = Stopwatch.GetTimestamp();
-                asd = (asd+1) % 4;
+                long totalsw = Stopwatch.GetTimestamp();
+                EventSink.InvokeBeforeWorldSave(new BeforeWorldSaveEventArgs());
+
+                long totalsw2 = Stopwatch.GetTimestamp();
+                long totalsw3 = Stopwatch.GetTimestamp();
+                long totalsw4 = Stopwatch.GetTimestamp();
+
+                mobarray = World.Mobiles.Values.ToArray();
+                itemarray = World.Items.Values.ToArray();
+
+                long sw = Stopwatch.GetTimestamp();
+
+                long curTick = DateTime.UtcNow.Ticks;
+
+                var t = new Task[]
+                {
+                    Task.Run(() => Parallel.ForEach(mobarray, m => m?.CheckDirtyFlag())),
+                    Task.Run(() => Parallel.ForEach(itemarray, i =>
+                    {
+                        if (i == null) return;
+                        /* 
+                         * Acutally needed? I mean .. shouldnt they decay normally?
+                         * 
+                         * if (i.Decays && i.Parent == null && i.Map != Map.Internal && (i.LastMoved + i.DecayTime).Ticks <= curTick)
+                         {
+                             i.Delete();
+                             i.Dirty = true;
+                             return;
+                         }*/
+                        i.CheckDirtyFlag();
+                    }))
+                };
 
                 _db.Commit();
+                Task.WaitAll(t);
+
+                Console.WriteLine($"Dirtycheck took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+                // sw = Stopwatch.GetTimestamp();
+                var dirtyMobiles = mobarray.Where(m => m != null && m.Dirty).ToArray();
+                var dirtyItems = itemarray.Where(i => i != null && i.Dirty).ToArray();
+                // Console.WriteLine($"Get dirt Linq took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+
+
+                _db.BeginTrans();
+
+                try
+                {
+                    var tasks = new[]
+                    {
+                        Task.Run(() => Write(_mobileCol, dirtyMobiles)),
+                        Task.Run(() => Write(_itemCol, dirtyItems)),
+                        Task.Run(() => Write(BaseGuild.List)),
+                        Task.Run(() => EventSink.InvokeWorldSave(new WorldSaveEventArgs(message)))
+                    };
+
+                    Task.WaitAll(tasks);
+
+                    _ms?.Close();
+                    _ms?.Dispose();
+                    _ms = null;
+                    _writer = null;
+                   // _db.Commit();  // non locking but slower..
+                    //_db.Checkpoint();
+                }
+                catch
+                {
+                    World.Broadcast(0, false, "Error while writing to DB! Rollback!");
+                    Console.WriteLine("Error while writing to DB! Rollback!");
+                    _db.Rollback();
+                }
+                Console.WriteLine($"Total Savetime without save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw2)}");
+                EventSink.InvokeAfterWorldSave(new AfterWorldSaveEventArgs());
+                Console.WriteLine($"Total Savetime with pre, mid and post save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw)}\n");
             }
-            catch
-            {
-                World.Broadcast(0, false, "Error while writing to DB! Rollback!");
-                Console.WriteLine("Error while writing to DB! Rollback!");
-                _db.Rollback();
-            }
-            Console.WriteLine($"Total Savetime without save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw4 + totalsw2 - totalsw3 )}");
-            EventSink.InvokeAfterWorldSave(new AfterWorldSaveEventArgs());
-            Console.WriteLine($"Total Savetime with pre, mid and post save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw)}\n");
         }
 
-        private static void Write<T>(ILiteCollection<DBRecord> dbcol, T[] collection, int asd) where T : IEntity, ISerializable
+        public static void Delete(IEntity ent)
+        {
+            lock(DBLock)
+            {
+                if (ent is Item)
+                    _itemCol.Delete(((Item)ent).Serial.Value);
+                else if (ent is Item)
+                    _mobileCol.Delete(((Item)ent).Serial.Value);
+            }
+
+        }
+
+        private static void Write<T>(ILiteCollection<DBRecord> dbcol, T[] collection) where T : IEntity, ISerializable
         {
             long sw = Stopwatch.GetTimestamp();
-            long gcc = GC.GetTotalMemory(false);
 
-            if (asd == 0) // just a switch to ping pong between the 2 "styles" for testing
+            var toDelete = new HashSet<int>(100);
+            var toUpdate = new List<DBRecord>((collection as ICollection<T>).Count);
+
+            foreach (var item in collection)
             {
-                foreach (var dirt in collection)
+                if (item.Deleted)
                 {
-                    if (dirt.Deleted)
-                    {
-                        dbcol.Delete(dirt.Serial.Value);
-                    }
-                    else
-                    {
-                        //Console.WriteLine(_db.Mapper.ToDocument(rec).ToString());
-                        dbcol.Upsert(ToRecord(dirt));
-                        dirt.ClearDirty();
-                    }
+                    toDelete.Add(item.Serial.Value);
+                    continue;
                 }
-                Console.WriteLine($"Write for collection Mode 1 {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+                toUpdate.Add(ToRecord(item));
+                item.ClearDirty();
             }
-            else if(asd == 1)// >10% faster, but more garbage? hmm..
-            {
-                var dirty = collection.Where(x => x.Deleted).Select(x => x.Serial.Value).ToHashSet();
-                var toupdate = collection
-                .Where(x => !x.Deleted && x.Dirty)
-                .AsParallel()
-                .Select(x => { x.ClearDirty(); return ToRecord(x); })
-                .ToList();
 
-                if (dirty.Count > 0)
-                    dbcol.DeleteMany(x => dirty.Contains(x.Serial));
-                dbcol.Upsert(toupdate);
-                Console.WriteLine($"Write for collection Mode 2 {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
-            }
-            else if(asd == 2)
-            {
-                int count = 0;
-                int dirtyCount = 0;
-                foreach (var x in collection)
+            if (toDelete.Count > 0)
+                lock (DBLock)
                 {
-                    if (x.Deleted) count++;
-                    else if (x.Dirty) dirtyCount++;
-                }
-
-                // 2. Vorallokierte Arrays nutzen, um temporären GC zu vermeiden
-                int[] toDelete = new int[count];
-                DBRecord[] toUpdate = new DBRecord[dirtyCount];
-
-                int deleteIndex = 0;
-                int updateIndex = 0;
-
-                foreach (var x in collection)
-                {
-                    if (x.Deleted)
-                        toDelete[deleteIndex++] = x.Serial.Value;
-                    else if (x.Dirty)
-                    {
-                        // DBRecord erstellen, dirty flag zurücksetzen
-                        toUpdate[updateIndex++] = ToRecord(x);
-                        x.ClearDirty();
-                    }
-                }
-
-                // 3. Löschen und Upsert
-                if (toDelete.Length > 0)
                     dbcol.DeleteMany(x => toDelete.Contains(x.Serial));
-
-                if (toUpdate.Length > 0)
-                    dbcol.Upsert(toUpdate);
-
-                Console.WriteLine($"Write optimized {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
-            }
-            else
-            {
-                var toDelete = new HashSet<int>((collection as ICollection<T>).Count);
-                var toUpdate = new List<DBRecord>((collection as ICollection<T>).Count);
-
-                foreach (var item in collection)
-                {
-                    if (item.Deleted)
-                    {
-                        toDelete.Add(item.Serial.Value);
-                        continue;
-                    }
-                    toUpdate.Add(ToRecord(item));
-                    item.ClearDirty();
                 }
 
-                if (toDelete.Count > 0)
-                    dbcol.DeleteMany(x => toDelete.Contains(x.Serial));
-
-                if (toUpdate.Count > 0)
+            if (toUpdate.Count > 0)
+            {
+                lock (DBLock)
+                {
                     dbcol.Upsert(toUpdate);
+                }
 
-                Console.WriteLine($"Write optimized 2? {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
             }
-            Console.WriteLine($"Write caused {GC.GetTotalMemory(false) - gcc} garbagebytes");
+
+            Console.WriteLine($"Write optimized 2? {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
         }
 
         public static void Write(IEnumerable<AccountRecord> collection)
@@ -279,9 +249,12 @@ namespace Server
                 else if (obj is Mobile m)
                     m.Deserialize(_reader);
             }
-            _br.Close();
-            _ms.Close();
-            _ms.Dispose();
+            _br?.Close();
+            if (_ms != null)
+            {
+                _ms.Close();
+                _ms.Dispose();
+            }
             _reader = null;
             _br = null;
             _ms = null;
@@ -348,6 +321,7 @@ namespace Server
         }
         public class AccountRecord
         {
+            [BsonId]
             public string Username { get; set; }
             public string Password { get; set; }
             public string PlainPassword { get; set; }
@@ -403,8 +377,12 @@ namespace Server
 
         public static bool CheckDirty(IEntity ent)
         {
-            if (ent == null || ent.Deleted || ent.Dirty)
+            if (ent == null) return false;
+            if(ent.Deleted || ent.Dirty)
+            {
+                ent.Dirty = true;
                 return true;
+            }
 
             ulong newHash = SnapshotEngine.ComputeSnapshotHash(ent as ISerializable);
 
@@ -512,7 +490,6 @@ namespace Server
         {
             if (_buffer == null || _buffer.Length < minSize)
             {
-                // nächstgrößere Zweierpotenz, damit wir nicht dauernd wachsen
                 int size = 1;
                 while (size < minSize) size <<= 1;
                 _buffer = new byte[size];
