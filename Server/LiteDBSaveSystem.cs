@@ -1,6 +1,7 @@
 using LiteDB;
 using Server.Guilds;
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8,18 +9,24 @@ using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Threading.Tasks;
+using static Server.LiteDBSaveSystem;
 
 namespace Server
 {
     public static class LiteDBSaveSystem
     {
-        private static readonly object SaveLock = new object();
         private static readonly object DBLock = new object();
         public static readonly LiteDatabase _db;
         private static readonly ILiteCollection<DBRecord> _mobileCol;
         private static readonly ILiteCollection<DBRecord> _itemCol;
         private static readonly ILiteCollection<BaseGuild> _guildCol;
         public static readonly ILiteCollection<AccountRecord> _accCol;
+
+        private static List<DBRecord> _mobileToUpsert;
+        private static List<DBRecord> _itemToUpsert;
+
+        private static readonly HashSet<int> _mobileToDelete;
+        private static readonly HashSet<int> _itemToDelete;
 
         static LiteDBSaveSystem()
         {
@@ -36,144 +43,118 @@ namespace Server
             _itemCol.EnsureIndex(x => x.Serial, true);
             _guildCol.EnsureIndex(x => x.Id, true);
             _accCol.EnsureIndex(x => x.Username, true);
+
+            _mobileToUpsert = new List<DBRecord>(1000);
+            _itemToUpsert = new List<DBRecord>(10000);
+            _mobileToDelete = new HashSet<int>();
+            _itemToDelete = new HashSet<int>();
         }
 
-        private static Mobile[] mobarray = null;
-        private static Item[] itemarray = null;
+        private static async Task ParallelCheck(IEnumerable<IDatabase> array)
+        {
+            Parallel.ForEach(array, m => m?.CheckDirtyFlag());
+        }
 
         public static async void Save(bool message)
         {
-            lock (SaveLock)
+            long totalsw = Stopwatch.GetTimestamp();
+
+            EventSink.InvokeBeforeWorldSave(new BeforeWorldSaveEventArgs());
+
+            var mobileCount = World.Mobiles.Count;
+            var mobileArray = ArrayPool<Mobile>.Shared.Rent(mobileCount);
+            World.Mobiles.Values.CopyTo(mobileArray, 0);
+
+            var itemCount = World.Items.Count;
+            var itemArray = ArrayPool<Item>.Shared.Rent(itemCount);
+            World.Items.Values.CopyTo(itemArray, 0);
+
+            long sw = Stopwatch.GetTimestamp();
+
+            try
             {
-                long totalsw = Stopwatch.GetTimestamp();
-                EventSink.InvokeBeforeWorldSave(new BeforeWorldSaveEventArgs());
+                await ParallelCheck(mobileArray.Take(mobileCount));
+                await ParallelCheck(itemArray.Take(itemCount));
+            }
+            finally
+            {
+                ArrayPool<Mobile>.Shared.Return(mobileArray, clearArray: false);
+                ArrayPool<Item>.Shared.Return(itemArray, clearArray: false);
+            }
 
-                long totalsw2 = Stopwatch.GetTimestamp();
-                long totalsw3 = Stopwatch.GetTimestamp();
-                long totalsw4 = Stopwatch.GetTimestamp();
+            Console.WriteLine($"Dirtycheck took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
 
-                mobarray = World.Mobiles.Values.ToArray();
-                itemarray = World.Items.Values.ToArray();
+            _db.BeginTrans();
 
-                long sw = Stopwatch.GetTimestamp();
-
-                long curTick = DateTime.UtcNow.Ticks;
-
-                var t = new Task[]
-                {
-                    Task.Run(() => Parallel.ForEach(mobarray, m => m?.CheckDirtyFlag())),
-                    Task.Run(() => Parallel.ForEach(itemarray, i =>
-                    {
-                        if (i == null) return;
-                        /* 
-                         * Acutally needed? I mean .. shouldnt they decay normally?
-                         * 
-                         * if (i.Decays && i.Parent == null && i.Map != Map.Internal && (i.LastMoved + i.DecayTime).Ticks <= curTick)
-                         {
-                             i.Delete();
-                             i.Dirty = true;
-                             return;
-                         }*/
-                        i.CheckDirtyFlag();
-                    }))
-                };
+            try
+            {
+                await Write(_mobileCol, _mobileToUpsert, _mobileToDelete);
+                await Write(_itemCol, _itemToUpsert, _itemToDelete);
+                await Write(BaseGuild.List);
+                EventSink.InvokeWorldSave(new WorldSaveEventArgs(message));
 
                 _db.Commit();
-                Task.WaitAll(t);
 
-                Console.WriteLine($"Dirtycheck took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
-                // sw = Stopwatch.GetTimestamp();
-                var dirtyMobiles = mobarray.Where(m => m != null && m.Dirty).ToArray();
-                var dirtyItems = itemarray.Where(i => i != null && i.Dirty).ToArray();
-                // Console.WriteLine($"Get dirt Linq took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+                _ms?.Close();
+                _ms?.Dispose();
+                _ms = null;
+                _writer = null;
 
-
-                _db.BeginTrans();
-
-                try
-                {
-                    var tasks = new[]
-                    {
-                        Task.Run(() => Write(_mobileCol, dirtyMobiles)),
-                        Task.Run(() => Write(_itemCol, dirtyItems)),
-                        Task.Run(() => Write(BaseGuild.List)),
-                        Task.Run(() => EventSink.InvokeWorldSave(new WorldSaveEventArgs(message)))
-                    };
-
-                    Task.WaitAll(tasks);
-
-                    _ms?.Close();
-                    _ms?.Dispose();
-                    _ms = null;
-                    _writer = null;
-                   // _db.Commit();  // non locking but slower..
-                    //_db.Checkpoint();
-                }
-                catch
-                {
-                    World.Broadcast(0, false, "Error while writing to DB! Rollback!");
-                    Console.WriteLine("Error while writing to DB! Rollback!");
-                    _db.Rollback();
-                }
-                Console.WriteLine($"Total Savetime without save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw2)}");
-                EventSink.InvokeAfterWorldSave(new AfterWorldSaveEventArgs());
-                Console.WriteLine($"Total Savetime with pre, mid and post save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw)}\n");
+                _mobileToUpsert.Clear();
+                _itemToUpsert.Clear();
+                _mobileToDelete.Clear();
+                _itemToDelete.Clear();
             }
+            catch
+            {
+                World.Broadcast(0, false, "Error while writing to DB! Rollback!");
+                Console.WriteLine("Error while writing to DB! Rollback!");
+                _db.Rollback();
+            }
+            Console.WriteLine($"Total Savetime without save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw)}");
+            EventSink.InvokeAfterWorldSave(new AfterWorldSaveEventArgs());
+            Console.WriteLine($"Total Savetime with pre, mid and post save eventhandlers! {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - totalsw)}\n");
         }
 
         public static void Delete(IEntity ent)
         {
             lock(DBLock)
             {
-                if (ent is Item)
-                    _itemCol.Delete(((Item)ent).Serial.Value);
-                else if (ent is Item)
-                    _mobileCol.Delete(((Item)ent).Serial.Value);
+                if (ent is Item) lock (_itemToDelete) _itemToDelete.Add(ent.Serial.Value);
+                else if (ent is Mobile) lock (_mobileToDelete) _mobileToDelete.Add(ent.Serial.Value);
             }
 
         }
 
-        private static void Write<T>(ILiteCollection<DBRecord> dbcol, T[] collection) where T : IEntity, ISerializable
+        private static async Task Write(ILiteCollection<DBRecord> dbcol, IEnumerable<DBRecord> upsertList, IEnumerable<int> deleteList)
         {
             long sw = Stopwatch.GetTimestamp();
 
-            var toDelete = new HashSet<int>(100);
-            var toUpdate = new List<DBRecord>((collection as ICollection<T>).Count);
-
-            foreach (var item in collection)
-            {
-                if (item.Deleted)
-                {
-                    toDelete.Add(item.Serial.Value);
-                    continue;
-                }
-                toUpdate.Add(ToRecord(item));
-                item.ClearDirty();
-            }
-
-            if (toDelete.Count > 0)
+            if (deleteList.Count() > 0)
                 lock (DBLock)
                 {
-                    dbcol.DeleteMany(x => toDelete.Contains(x.Serial));
+                    //dbcol.DeleteMany(x => deleteList.Contains(x.Serial));
+                    var ids = _mobileToDelete.Select(id => new BsonValue(id));
+                    dbcol.DeleteMany(Query.In("_id", ids));
+                    Console.WriteLine($"Delete Many {upsertList.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
                 }
 
-            if (toUpdate.Count > 0)
-            {
+            sw = Stopwatch.GetTimestamp();
+
+            if (upsertList.Count() > 0)
                 lock (DBLock)
                 {
-                    dbcol.Upsert(toUpdate);
+                    dbcol.Upsert(upsertList);
                 }
 
-            }
-
-            Console.WriteLine($"Write optimized 2? {collection.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
+            Console.WriteLine($"Write optimized 2? {upsertList.GetType()} took {TimeSpan.FromTicks(Stopwatch.GetTimestamp() - sw)}");
         }
 
         public static void Write(IEnumerable<AccountRecord> collection)
         {
             _accCol.Upsert(collection);
         }
-        private static void Write(Dictionary<int, BaseGuild> list)
+        private static async Task Write(Dictionary<int, BaseGuild> list)
         {
             _guildCol.Upsert(list.Values);
         }
@@ -185,6 +166,8 @@ namespace Server
             Load(_guildCol);
 
             Deserialize();
+            Parallel.ForEach(World.Items.Values, item => item.SnapshotHash = SnapshotEngine.ComputeSnapshotHash(item));
+            Parallel.ForEach(World.Mobiles.Values, mob => mob.SnapshotHash = SnapshotEngine.ComputeSnapshotHash(mob));
 
             EventSink.InvokeWorldLoad();
         }
@@ -288,6 +271,7 @@ namespace Server
         private static BinaryFileWriter _writer;
         private static DBRecord ToRecord<T>(T dirt) where T : IEntity, ISerializable
         {
+            if (dirt == null || dirt.Deleted) return null;
             if (_ms == null)
                 _ms = new MemoryStream(4096);
 
@@ -319,7 +303,7 @@ namespace Server
             public string EntityType { get; set; }
             public byte[] Data { get; set; }
         }
-        public class AccountRecord
+        public class AccountRecord : ISerializable
         {
             [BsonId]
             public string Username { get; set; }
@@ -341,6 +325,47 @@ namespace Server
             public int Sovereigns { get; set; }
             public IndexValuePair[] MobileSecureAccountBalances { get; set; }
             public StringPair[] Tags { get; set; }
+
+            public int TypeReference => 0;
+
+            public int SerialIdentity => 0;
+
+            public void Serialize(GenericWriter writer)
+            {
+                writer.Write(Username);
+                writer.Write(Password);
+                writer.Write(PlainPassword);
+                writer.Write(MD5Password);
+                writer.Write(SHA1Password);
+                writer.Write(SHA512Password);
+                writer.Write((int)AccessLevel);
+                writer.Write(Flags);
+                writer.Write(Created);
+                writer.Write(LastLogin);
+                writer.Write(TotalGameTime);
+                foreach(var i  in MobileEntries)
+                    writer.Write(i.Value);
+
+                foreach (var i in AccountComments)
+                {
+                    writer.Write(i.Content);
+                    writer.Write(i.LastModified);
+                    writer.Write(i.AddedBy);
+                }
+                foreach (var i in LoginIPs)
+                    writer.Write(i.ToString());
+                foreach (var i in IPRestrictions)
+                    writer.Write(i);
+                writer.Write(TotalCurrency);
+                writer.Write(Sovereigns);
+                foreach (var i in MobileSecureAccountBalances)
+                    writer.Write(i.Value);
+                foreach (var i in Tags)
+                {
+                    writer.Write(i.Item1);
+                    writer.Write(i.Item2);
+                }
+            }
         }
 
         public class IndexValuePair
@@ -375,24 +400,25 @@ namespace Server
             public AccountCommentRecord() { }
         }
 
-        public static bool CheckDirty(IEntity ent)
+        public static bool CheckDirty<T>(T ent) where T : IEntity, ISerializable
         {
             if (ent == null) return false;
-            if(ent.Deleted || ent.Dirty)
+            if (ent.Deleted)
             {
-                ent.Dirty = true;
+                if (ent is Item) lock (_itemToDelete) _itemToDelete.Add(ent.Serial.Value);
+                else if (ent is Mobile) lock (_mobileToDelete) _mobileToDelete.Add(ent.Serial.Value);
                 return true;
             }
-
-            ulong newHash = SnapshotEngine.ComputeSnapshotHash(ent as ISerializable);
+            DBRecord data = ToRecord(ent);
+            ulong newHash = XXHash64.Hash(data.Data, data.Data.Length);
 
             if (!ent.SnapshotHash.Equals(newHash))
             {
+                if (ent is Item) lock (_itemToUpsert) _itemToUpsert.Add(data);
+                else if (ent is Mobile) lock (_mobileToUpsert) _mobileToUpsert.Add(data);
                 ent.SnapshotHash = newHash;
-                ent.Dirty = true;
                 return true;
             }
-
             return false;
         }
     }
@@ -523,6 +549,25 @@ namespace Server
             int len = (int)_ms.Length;
             byte[] buffer = SnapshotBufferPool.Rent(len);
             Buffer.BlockCopy(_ms.GetBuffer(), 0, buffer, 0, len);
+
+            return XXHash64.Hash(buffer, len);
+        }
+        public static ulong ComputeSnapshotHash(AccountRecord ent)
+        {
+            if (_ms == null)
+                _ms = new MemoryStream(65536); // initial pool size
+
+            _ms.Position = 0;   // reset
+            _ms.SetLength(0);   // truncate (no alloc)
+
+            if (writer == null)
+                writer = new BinaryFileWriter(_ms, true);
+
+            ent.Serialize(writer);
+            writer.Flush();
+
+            int len = (int)_ms.Length;
+            var buffer = _ms.GetBuffer();
 
             return XXHash64.Hash(buffer, len);
         }

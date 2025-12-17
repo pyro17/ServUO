@@ -59,7 +59,6 @@ namespace Server
         }
         public void CheckDirtyFlag()
         {
-            Dirty = LiteDBSaveSystem.CheckDirty(this);
         }
         public bool Deleted { get; private set; }
 
